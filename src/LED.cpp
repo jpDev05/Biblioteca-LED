@@ -144,4 +144,5 @@ void Led::funcaoPiscar()
     }
 }
 
-//Author: João Pedro de Oliveira
+//Author: João Pedro de Oliveira.
+//Date: 2026-06-10
