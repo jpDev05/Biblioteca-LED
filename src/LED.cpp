@@ -143,3 +143,5 @@ void Led::funcaoPiscar()
         }
     }
 }
+
+//Author: João Pedro de Oliveira
