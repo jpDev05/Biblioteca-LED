@@ -149,3 +149,5 @@ void Led::funcaoPiscar()
 //Biblioteca led, que permite controlar um led de forma simples e intuitiva. A biblioteca oferece funcionalidades para acender, apagar, piscar e alternar o estado do led, além de permitir a configuração de tempo e frequência de piscar.
 //Private variables:
 //pino: armazena o número do pino digital onde o led está conectado.
+//estado: armazena o estado atual do led (HIGH ou LOW).
+//apagarNoTempo: indica se o led deve ser apagado após um tempo determinado.
