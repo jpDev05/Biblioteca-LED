@@ -42,8 +42,7 @@ jobs:
 
           echo "Analisando alterações do commit ${COMMIT_SHA}..."
 
-          if [ "${BEFORE_SHA}" != "0000000000000000000000000000000000000000" ] && \
-             git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+          if [ "${BEFORE_SHA}" != "0000000000000000000000000000000000000000" ] && git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
             DIFF_BASE="${BEFORE_SHA}"
           elif git rev-parse "${COMMIT_SHA}^" >/dev/null 2>&1; then
             DIFF_BASE="$(git rev-parse "${COMMIT_SHA}^")"
@@ -57,6 +56,7 @@ jobs:
           ADDED_LINES="$(git diff --numstat "${DIFF_BASE}" "${COMMIT_SHA}" | awk '{a+=$1} END {print a+0}')"
           DELETED_LINES="$(git diff --numstat "${DIFF_BASE}" "${COMMIT_SHA}" | awk '{d+=$2} END {print d+0}')"
           FILE_COUNT="$(wc -l < "${FILES_FILE}" | tr -d ' ')"
+          COMMIT_SHORT="${COMMIT_SHA:0:7}"
 
           case "${COMMIT_MESSAGE}" in
             feat:*|feat\(*) TYPE="✨ Feature" ;;
@@ -87,15 +87,14 @@ jobs:
           echo "Linhas adicionadas: ${ADDED_LINES}"
           echo "Linhas removidas: ${DELETED_LINES}"
 
-          QUERY_RESPONSE="$({
-            curl -sS --fail-with-body -X POST \
-              "https://api.notion.com/v1/data_sources/${NOTION_DATA_SOURCE_ID}/query" \
-              -H "Authorization: Bearer ${NOTION_TOKEN}" \
-              -H "Notion-Version: ${NOTION_VERSION}" \
-              -H "Content-Type: application/json" \
-              --data "$(jq -n --arg repo "${REPOSITORIO_URL}" \
-                '{filter:{property:"Repositorio",url:{equals:$repo}},page_size:1}')"
-          })}"
+          QUERY_BODY="$(jq -n --arg repo "${REPOSITORIO_URL}" '{filter:{property:"Repositorio",url:{equals:$repo}},page_size:1}')"
+
+          QUERY_RESPONSE="$(curl -sS --fail-with-body -X POST \
+            "https://api.notion.com/v1/data_sources/${NOTION_DATA_SOURCE_ID}/query" \
+            -H "Authorization: Bearer ${NOTION_TOKEN}" \
+            -H "Notion-Version: ${NOTION_VERSION}" \
+            -H "Content-Type: application/json" \
+            --data "${QUERY_BODY}")"
 
           PAGE_ID="$(echo "${QUERY_RESPONSE}" | jq -r '.results[0].id // empty')"
 
@@ -106,23 +105,22 @@ jobs:
             --arg message "${COMMIT_MESSAGE:0:1800}" \
             --arg author "${COMMIT_AUTHOR}" \
             --arg date "${COMMIT_DATE}" \
-            --arg sha "${COMMIT_SHA}" \
+            --arg short "${COMMIT_SHORT}" \
             --arg url "${COMMIT_URL}" \
             --arg files "${FILE_COUNT}" \
             --arg added "${ADDED_LINES}" \
             --arg deleted "${DELETED_LINES}" \
-            --arg symbols "${SYMBOLS:0:1800}" \
             '[
-              {object:"block",type:"divider",divider:{}},
-              {object:"block",type:"heading_2",heading_2:{rich_text:[{type:"text",text:{content:("📌 "+$type)}}]}},
-              {object:"block",type:"paragraph",paragraph:{rich_text:[{type:"text",text:{content:$message}}]}},
-              {object:"block",type:"paragraph",paragraph:{rich_text:[{type:"text",text:{content:("Autor: "+$author)}},{type:"text",text:{content:(" | Data: "+$date)}}]}},
-              {object:"block",type:"paragraph",paragraph:{rich_text:[{type:"text",text:{content:("Commit: "+$sha[0:7]),link:{url:$url}}}]}},
-              {object:"block",type:"heading_3",heading_3:{rich_text:[{type:"text",text:{content:"📊 Resumo da alteração"}}]}},
-              {object:"block",type:"bulleted_list_item",bulleted_list_item:{rich_text:[{type:"text",text:{content:("Arquivos alterados: "+$files)}}]}},
-              {object:"block",type:"bulleted_list_item",bulleted_list_item:{rich_text:[{type:"text",text:{content:("Linhas adicionadas: "+$added)}}]}},
-              {object:"block",type:"bulleted_list_item",bulleted_list_item:{rich_text:[{type:"text",text:{content:("Linhas removidas: "+$deleted)}}]}},
-              {object:"block",type:"heading_3",heading_3:{rich_text:[{type:"text",text:{content:"📁 Arquivos alterados"}}]}}
+              {"object":"block","type":"divider","divider":{}},
+              {"object":"block","type":"heading_2","heading_2":{"rich_text":[{"type":"text","text":{"content":("📌 "+$type)}}]}},
+              {"object":"block","type":"paragraph","paragraph":{"rich_text":[{"type":"text","text":{"content":$message}}]}},
+              {"object":"block","type":"paragraph","paragraph":{"rich_text":[{"type":"text","text":{"content":("Autor: "+$author)}},{"type":"text","text":{"content":(" | Data: "+$date)}}]}},
+              {"object":"block","type":"paragraph","paragraph":{"rich_text":[{"type":"text","text":{"content":("Commit: "+$short),"link":{"url":$url}}}]}},
+              {"object":"block","type":"heading_3","heading_3":{"rich_text":[{"type":"text","text":{"content":"📊 Resumo da alteração"}}]}},
+              {"object":"block","type":"bulleted_list_item","bulleted_list_item":{"rich_text":[{"type":"text","text":{"content":("Arquivos alterados: "+$files)}}]}},
+              {"object":"block","type":"bulleted_list_item","bulleted_list_item":{"rich_text":[{"type":"text","text":{"content":("Linhas adicionadas: "+$added)}}]}},
+              {"object":"block","type":"bulleted_list_item","bulleted_list_item":{"rich_text":[{"type":"text","text":{"content":("Linhas removidas: "+$deleted)}}]}},
+              {"object":"block","type":"heading_3","heading_3":{"rich_text":[{"type":"text","text":{"content":"📁 Arquivos alterados"}}]}}
             ]' > "${BLOCKS_JSON}"
 
           while IFS=$'\t' read -r status path; do
@@ -138,7 +136,7 @@ jobs:
             esac
 
             jq --arg text "${LABEL}: ${path}" \
-              '. += [{object:"block",type:"bulleted_list_item",bulleted_list_item:{rich_text:[{type:"text",text:{content:$text}}]}}]' \
+              '. += [{"object":"block","type":"bulleted_list_item","bulleted_list_item":{"rich_text":[{"type":"text","text":{"content":$text}}]}}]' \
               "${BLOCKS_JSON}" > "${BLOCKS_JSON}.tmp"
             mv "${BLOCKS_JSON}.tmp" "${BLOCKS_JSON}"
           done < "${FILES_FILE}"
@@ -146,48 +144,43 @@ jobs:
           if [ -n "${SYMBOLS}" ]; then
             jq --arg symbols "${SYMBOLS:0:1800}" \
               '. += [
-                {object:"block",type:"heading_3",heading_3:{rich_text:[{type:"text",text:{content:"🧩 Símbolos possivelmente modificados"}}]}},
-                {object:"block",type:"code",code:{language:"plain text",rich_text:[{type:"text",text:{content:$symbols}}]}}
+                {"object":"block","type":"heading_3","heading_3":{"rich_text":[{"type":"text","text":{"content":"🧩 Símbolos possivelmente modificados"}}]}},
+                {"object":"block","type":"code","code":{"language":"plain text","rich_text":[{"type":"text","text":{"content":$symbols}}]}}
               ]' \
               "${BLOCKS_JSON}" > "${BLOCKS_JSON}.tmp"
             mv "${BLOCKS_JSON}.tmp" "${BLOCKS_JSON}"
           fi
 
-          jq '. += [
-            {object:"block",type:"paragraph",paragraph:{rich_text:[{type:"text",text:{content:"ℹ️ Documentação gerada automaticamente pelo GitHub Actions, sem API de IA paga."}}]}}
-          ]' "${BLOCKS_JSON}" > "${BLOCKS_JSON}.tmp"
+          jq '. += [{"object":"block","type":"paragraph","paragraph":{"rich_text":[{"type":"text","text":{"content":"ℹ️ Documentação gerada automaticamente pelo GitHub Actions, sem API de IA paga."}}]}}]' \
+            "${BLOCKS_JSON}" > "${BLOCKS_JSON}.tmp"
           mv "${BLOCKS_JSON}.tmp" "${BLOCKS_JSON}"
 
           if [ -z "${PAGE_ID}" ]; then
             echo "Projeto não encontrado. Criando Biblioteca-LED..."
 
-            CREATE_BODY="$({
-              jq \
-                --arg repo "${REPOSITORIO_URL}" \
-                --arg sha "${COMMIT_SHA}" \
-                --arg date "${COMMIT_DATE}" \
-                --argjson children "$(cat "${BLOCKS_JSON}")" \
-                '{
-                  parent:{data_source_id:"d4190e15-cd71-4d55-8706-1ccfeb0227fd"},
-                  properties:{
-                    Projeto:{title:[{text:{content:"Biblioteca-LED"}}]},
-                    Repositorio:{url:$repo},
-                    Status:{select:{name:"Ativo"}},
-                    "Ultimo commit":{rich_text:[{text:{content:$sha}}]},
-                    "Ultima atualizacao":{date:{start:$date}}
-                  },
-                  children:$children
-                }'
-            })}"
+            CREATE_BODY="$(jq -n \
+              --arg repo "${REPOSITORIO_URL}" \
+              --arg sha "${COMMIT_SHA}" \
+              --arg date "${COMMIT_DATE}" \
+              --argjson children "$(cat "${BLOCKS_JSON}")" \
+              '{
+                parent:{data_source_id:"d4190e15-cd71-4d55-8706-1ccfeb0227fd"},
+                properties:{
+                  Projeto:{title:[{text:{content:"Biblioteca-LED"}}]},
+                  Repositorio:{url:$repo},
+                  Status:{select:{name:"Ativo"}},
+                  "Ultimo commit":{rich_text:[{text:{content:$sha}}]},
+                  "Ultima atualizacao":{date:{start:$date}}
+                },
+                children:$children
+              }')"
 
-            CREATE_RESPONSE="$({
-              curl -sS --fail-with-body -X POST \
-                "https://api.notion.com/v1/pages" \
-                -H "Authorization: Bearer ${NOTION_TOKEN}" \
-                -H "Notion-Version: ${NOTION_VERSION}" \
-                -H "Content-Type: application/json" \
-                --data "${CREATE_BODY}"
-            })}"
+            CREATE_RESPONSE="$(curl -sS --fail-with-body -X POST \
+              "https://api.notion.com/v1/pages" \
+              -H "Authorization: Bearer ${NOTION_TOKEN}" \
+              -H "Notion-Version: ${NOTION_VERSION}" \
+              -H "Content-Type: application/json" \
+              --data "${CREATE_BODY}")"
 
             echo "${CREATE_RESPONSE}" | jq '{object,id,url}'
             echo "Projeto criado e documentação inicial registrada."
@@ -196,17 +189,17 @@ jobs:
 
           echo "Projeto encontrado: ${PAGE_ID}. Atualizando propriedades..."
 
-          UPDATE_RESPONSE="$({
-            curl -sS --fail-with-body -X PATCH \
-              "https://api.notion.com/v1/pages/${PAGE_ID}" \
-              -H "Authorization: Bearer ${NOTION_TOKEN}" \
-              -H "Notion-Version: ${NOTION_VERSION}" \
-              -H "Content-Type: application/json" \
-              --data "$(jq -n \
-                --arg sha "${COMMIT_SHA}" \
-                --arg date "${COMMIT_DATE}" \
-                '{properties:{"Ultimo commit":{rich_text:[{text:{content:$sha}}]},"Ultima atualizacao":{date:{start:$date}}}}')"
-          })}"
+          UPDATE_BODY="$(jq -n \
+            --arg sha "${COMMIT_SHA}" \
+            --arg date "${COMMIT_DATE}" \
+            '{properties:{"Ultimo commit":{rich_text:[{text:{content:$sha}}]},"Ultima atualizacao":{date:{start:$date}}}}')"
+
+          UPDATE_RESPONSE="$(curl -sS --fail-with-body -X PATCH \
+            "https://api.notion.com/v1/pages/${PAGE_ID}" \
+            -H "Authorization: Bearer ${NOTION_TOKEN}" \
+            -H "Notion-Version: ${NOTION_VERSION}" \
+            -H "Content-Type: application/json" \
+            --data "${UPDATE_BODY}")"
 
           echo "${UPDATE_RESPONSE}" | jq '{object,id,last_edited_time}'
 
@@ -215,14 +208,12 @@ jobs:
 
           jq '{children: .[0:90]}' "${BLOCKS_JSON}" > "${BLOCKS_JSON}.payload"
 
-          BLOCK_RESPONSE="$({
-            curl -sS --fail-with-body -X PATCH \
-              "https://api.notion.com/v1/blocks/${PAGE_ID}/children" \
-              -H "Authorization: Bearer ${NOTION_TOKEN}" \
-              -H "Notion-Version: ${NOTION_VERSION}" \
-              -H "Content-Type: application/json" \
-              --data-binary @"${BLOCKS_JSON}.payload"
-          })}"
+          BLOCK_RESPONSE="$(curl -sS --fail-with-body -X PATCH \
+            "https://api.notion.com/v1/blocks/${PAGE_ID}/children" \
+            -H "Authorization: Bearer ${NOTION_TOKEN}" \
+            -H "Notion-Version: ${NOTION_VERSION}" \
+            -H "Content-Type: application/json" \
+            --data-binary @"${BLOCKS_JSON}.payload")"
 
           echo "${BLOCK_RESPONSE}" | jq '{object,results:(.results|length)}'
           echo "Documentação atualizada com sucesso!"
