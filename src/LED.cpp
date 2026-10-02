@@ -146,3 +146,4 @@ void Led::funcaoPiscar()
 
 //Author: João Pedro de Oliveira.
 //Date: 2026-06-10
+//Biblioteca led, que permite controlar um led de forma simples e intuitiva. A biblioteca oferece funcionalidades para acender, apagar, piscar e alternar o estado do led, além de permitir a configuração de tempo e frequência de piscar.
