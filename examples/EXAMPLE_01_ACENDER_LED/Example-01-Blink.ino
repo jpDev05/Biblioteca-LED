@@ -1,7 +1,7 @@
 #include <Arduino.h>
 #include <LED.h>
 
-Led pinLed(45);
+Led pinLed(40);
 uint32_t tempoEspera;
 
 void setup()
