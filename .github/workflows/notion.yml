@@ -1,9 +1,8 @@
-name: GitHub → Notion
+name: GitHub → Groq → Notion
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
 
 permissions:
   contents: read
@@ -12,208 +11,42 @@ jobs:
   documentar:
     runs-on: ubuntu-latest
 
-    env:
-      NOTION_VERSION: "2025-09-03"
-      NOTION_DATA_SOURCE_ID: "d4190e15-cd71-4d55-8706-1ccfeb0227fd"
-      REPOSITORIO_URL: "https://github.com/jpDev05/Biblioteca-LED"
-
     steps:
       - name: Baixar histórico do Git
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Analisar commit e atualizar documentação
+      - name: Baixar sincronizador
+        run: |
+          curl -fsSL \
+            https://raw.githubusercontent.com/jpDev05/.github-workflows-notion.yml/main/notion_sync.py \
+            -o notion_sync.py
+
+      - name: Documentar no Notion com Groq
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+
           COMMIT_SHA: ${{ github.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
           COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
           COMMIT_AUTHOR: ${{ github.event.head_commit.author.name }}
           COMMIT_DATE: ${{ github.event.head_commit.timestamp }}
+
+          REPOSITORY: ${{ github.repository }}
+          REPOSITORY_URL: https://github.com/${{ github.repository }}
           COMMIT_URL: https://github.com/${{ github.repository }}/commit/${{ github.sha }}
-          BEFORE_SHA: ${{ github.event.before }}
+
         run: |
-          set -euo pipefail
-
-          if [ -z "${NOTION_TOKEN:-}" ]; then
-            echo "NOTION_TOKEN não está configurado."
+          test -n "$NOTION_TOKEN" || {
+            echo "::error::NOTION_TOKEN não configurado"
             exit 1
-          fi
+          }
 
-          echo "Analisando alterações do commit ${COMMIT_SHA}..."
+          test -n "$GROQ_API_KEY" || {
+            echo "::error::GROQ_API_KEY não configurado"
+            exit 1
+          }
 
-          if [ "${BEFORE_SHA}" != "0000000000000000000000000000000000000000" ] && git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
-            DIFF_BASE="${BEFORE_SHA}"
-          elif git rev-parse "${COMMIT_SHA}^" >/dev/null 2>&1; then
-            DIFF_BASE="$(git rev-parse "${COMMIT_SHA}^")"
-          else
-            DIFF_BASE="$(git hash-object -t tree /dev/null)"
-          fi
-
-          FILES_FILE="$(mktemp)"
-          git diff --name-status "${DIFF_BASE}" "${COMMIT_SHA}" > "${FILES_FILE}"
-
-          ADDED_LINES="$(git diff --numstat "${DIFF_BASE}" "${COMMIT_SHA}" | awk '{a+=$1} END {print a+0}')"
-          DELETED_LINES="$(git diff --numstat "${DIFF_BASE}" "${COMMIT_SHA}" | awk '{d+=$2} END {print d+0}')"
-          FILE_COUNT="$(wc -l < "${FILES_FILE}" | tr -d ' ')"
-          COMMIT_SHORT="${COMMIT_SHA:0:7}"
-
-          case "${COMMIT_MESSAGE}" in
-            feat:*|feat\(*) TYPE="✨ Feature" ;;
-            fix:*|fix\(*) TYPE="🐛 Correção" ;;
-            docs:*|docs\(*) TYPE="📚 Documentação" ;;
-            refactor:*|refactor\(*) TYPE="♻️ Refatoração" ;;
-            test:*|test\(*) TYPE="🧪 Teste" ;;
-            chore:*|chore\(*) TYPE="🔧 Manutenção" ;;
-            *) TYPE="📝 Alteração" ;;
-          esac
-
-          SYMBOLS="$(
-            git diff --unified=0 "${DIFF_BASE}" "${COMMIT_SHA}" -- \
-              '*.c' '*.cc' '*.cpp' '*.cxx' '*.h' '*.hpp' '*.js' '*.jsx' '*.ts' '*.tsx' '*.py' '*.java' '*.cs' '*.php' \
-              2>/dev/null |
-            grep '^+' |
-            grep -v '^+++' |
-            sed -E \
-              -e 's/.*\b(class|struct|interface|enum)[[:space:]]+([A-Za-z_][A-Za-z0-9_]*).*/\1 \2/' \
-              -e 's/.*\b(function|def)[[:space:]]+([A-Za-z_][A-Za-z0-9_]*).*/\1 \2/' \
-              -e 's/.*\b([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*\([^;{}]*\)[[:space:]]*\{.*/função \1/' |
-            grep -E '^(class|struct|interface|enum|function|def|função) ' |
-            sort -u |
-            head -20 || true
-          )"
-
-          echo "Arquivos alterados: ${FILE_COUNT}"
-          echo "Linhas adicionadas: ${ADDED_LINES}"
-          echo "Linhas removidas: ${DELETED_LINES}"
-
-          QUERY_BODY="$(jq -n --arg repo "${REPOSITORIO_URL}" '{filter:{property:"Repositorio",url:{equals:$repo}},page_size:1}')"
-
-          QUERY_RESPONSE="$(curl -sS --fail-with-body -X POST \
-            "https://api.notion.com/v1/data_sources/${NOTION_DATA_SOURCE_ID}/query" \
-            -H "Authorization: Bearer ${NOTION_TOKEN}" \
-            -H "Notion-Version: ${NOTION_VERSION}" \
-            -H "Content-Type: application/json" \
-            --data "${QUERY_BODY}")"
-
-          PAGE_ID="$(echo "${QUERY_RESPONSE}" | jq -r '.results[0].id // empty')"
-
-          BLOCKS_JSON="$(mktemp)"
-
-          jq -n \
-            --arg type "${TYPE}" \
-            --arg message "${COMMIT_MESSAGE:0:1800}" \
-            --arg author "${COMMIT_AUTHOR}" \
-            --arg date "${COMMIT_DATE}" \
-            --arg short "${COMMIT_SHORT}" \
-            --arg url "${COMMIT_URL}" \
-            --arg files "${FILE_COUNT}" \
-            --arg added "${ADDED_LINES}" \
-            --arg deleted "${DELETED_LINES}" \
-            '[
-              {"object":"block","type":"divider","divider":{}},
-              {"object":"block","type":"heading_2","heading_2":{"rich_text":[{"type":"text","text":{"content":("📌 "+$type)}}]}},
-              {"object":"block","type":"paragraph","paragraph":{"rich_text":[{"type":"text","text":{"content":$message}}]}},
-              {"object":"block","type":"paragraph","paragraph":{"rich_text":[{"type":"text","text":{"content":("Autor: "+$author)}},{"type":"text","text":{"content":(" | Data: "+$date)}}]}},
-              {"object":"block","type":"paragraph","paragraph":{"rich_text":[{"type":"text","text":{"content":("Commit: "+$short),"link":{"url":$url}}}]}},
-              {"object":"block","type":"heading_3","heading_3":{"rich_text":[{"type":"text","text":{"content":"📊 Resumo da alteração"}}]}},
-              {"object":"block","type":"bulleted_list_item","bulleted_list_item":{"rich_text":[{"type":"text","text":{"content":("Arquivos alterados: "+$files)}}]}},
-              {"object":"block","type":"bulleted_list_item","bulleted_list_item":{"rich_text":[{"type":"text","text":{"content":("Linhas adicionadas: "+$added)}}]}},
-              {"object":"block","type":"bulleted_list_item","bulleted_list_item":{"rich_text":[{"type":"text","text":{"content":("Linhas removidas: "+$deleted)}}]}},
-              {"object":"block","type":"heading_3","heading_3":{"rich_text":[{"type":"text","text":{"content":"📁 Arquivos alterados"}}]}}
-            ]' > "${BLOCKS_JSON}"
-
-          while IFS=$'\t' read -r status path; do
-            [ -z "${path:-}" ] && continue
-
-            case "${status}" in
-              A) LABEL="➕ Adicionado" ;;
-              M) LABEL="✏️ Modificado" ;;
-              D) LABEL="➖ Removido" ;;
-              R*) LABEL="🔀 Renomeado" ;;
-              C*) LABEL="📋 Copiado" ;;
-              *) LABEL="📝 Alterado" ;;
-            esac
-
-            jq --arg text "${LABEL}: ${path}" \
-              '. += [{"object":"block","type":"bulleted_list_item","bulleted_list_item":{"rich_text":[{"type":"text","text":{"content":$text}}]}}]' \
-              "${BLOCKS_JSON}" > "${BLOCKS_JSON}.tmp"
-            mv "${BLOCKS_JSON}.tmp" "${BLOCKS_JSON}"
-          done < "${FILES_FILE}"
-
-          if [ -n "${SYMBOLS}" ]; then
-            jq --arg symbols "${SYMBOLS:0:1800}" \
-              '. += [
-                {"object":"block","type":"heading_3","heading_3":{"rich_text":[{"type":"text","text":{"content":"🧩 Símbolos possivelmente modificados"}}]}},
-                {"object":"block","type":"code","code":{"language":"plain text","rich_text":[{"type":"text","text":{"content":$symbols}}]}}
-              ]' \
-              "${BLOCKS_JSON}" > "${BLOCKS_JSON}.tmp"
-            mv "${BLOCKS_JSON}.tmp" "${BLOCKS_JSON}"
-          fi
-
-          jq '. += [{"object":"block","type":"paragraph","paragraph":{"rich_text":[{"type":"text","text":{"content":"ℹ️ Documentação gerada automaticamente pelo GitHub Actions, sem API de IA paga."}}]}}]' \
-            "${BLOCKS_JSON}" > "${BLOCKS_JSON}.tmp"
-          mv "${BLOCKS_JSON}.tmp" "${BLOCKS_JSON}"
-
-          if [ -z "${PAGE_ID}" ]; then
-            echo "Projeto não encontrado. Criando Biblioteca-LED..."
-
-            CREATE_BODY="$(jq -n \
-              --arg repo "${REPOSITORIO_URL}" \
-              --arg sha "${COMMIT_SHA}" \
-              --arg date "${COMMIT_DATE}" \
-              --argjson children "$(cat "${BLOCKS_JSON}")" \
-              '{
-                parent:{data_source_id:"d4190e15-cd71-4d55-8706-1ccfeb0227fd"},
-                properties:{
-                  Projeto:{title:[{text:{content:"Biblioteca-LED"}}]},
-                  Repositorio:{url:$repo},
-                  Status:{select:{name:"Ativo"}},
-                  "Ultimo commit":{rich_text:[{text:{content:$sha}}]},
-                  "Ultima atualizacao":{date:{start:$date}}
-                },
-                children:$children
-              }')"
-
-            CREATE_RESPONSE="$(curl -sS --fail-with-body -X POST \
-              "https://api.notion.com/v1/pages" \
-              -H "Authorization: Bearer ${NOTION_TOKEN}" \
-              -H "Notion-Version: ${NOTION_VERSION}" \
-              -H "Content-Type: application/json" \
-              --data "${CREATE_BODY}")"
-
-            echo "${CREATE_RESPONSE}" | jq '{object,id,url}'
-            echo "Projeto criado e documentação inicial registrada."
-            exit 0
-          fi
-
-          echo "Projeto encontrado: ${PAGE_ID}. Atualizando propriedades..."
-
-          UPDATE_BODY="$(jq -n \
-            --arg sha "${COMMIT_SHA}" \
-            --arg date "${COMMIT_DATE}" \
-            '{properties:{"Ultimo commit":{rich_text:[{text:{content:$sha}}]},"Ultima atualizacao":{date:{start:$date}}}}')"
-
-          UPDATE_RESPONSE="$(curl -sS --fail-with-body -X PATCH \
-            "https://api.notion.com/v1/pages/${PAGE_ID}" \
-            -H "Authorization: Bearer ${NOTION_TOKEN}" \
-            -H "Notion-Version: ${NOTION_VERSION}" \
-            -H "Content-Type: application/json" \
-            --data "${UPDATE_BODY}")"
-
-          echo "${UPDATE_RESPONSE}" | jq '{object,id,last_edited_time}'
-
-          BLOCK_COUNT="$(jq 'length' "${BLOCKS_JSON}")"
-          echo "Adicionando ${BLOCK_COUNT} blocos ao histórico..."
-
-          jq '{children: .[0:90]}' "${BLOCKS_JSON}" > "${BLOCKS_JSON}.payload"
-
-          BLOCK_RESPONSE="$(curl -sS --fail-with-body -X PATCH \
-            "https://api.notion.com/v1/blocks/${PAGE_ID}/children" \
-            -H "Authorization: Bearer ${NOTION_TOKEN}" \
-            -H "Notion-Version: ${NOTION_VERSION}" \
-            -H "Content-Type: application/json" \
-            --data-binary @"${BLOCKS_JSON}.payload")"
-
-          echo "${BLOCK_RESPONSE}" | jq '{object,results:(.results|length)}'
-          echo "Documentação atualizada com sucesso!"
+          python3 notion_sync.py
