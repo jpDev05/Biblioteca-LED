@@ -1,0 +1,103 @@
+name: GitHub → Notion
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  documentar:
+    runs-on: ubuntu-latest
+
+    env:
+      NOTION_VERSION: "2025-09-03"
+      NOTION_DATA_SOURCE_ID: "d4190e15-cd71-4d55-8706-1ccfeb0227fd"
+      REPOSITORIO_URL: "https://github.com/jpDev05/Biblioteca-LED"
+
+    steps:
+      - name: Registrar commit no Notion
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          COMMIT_SHA: ${{ github.sha }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+          COMMIT_AUTHOR: ${{ github.event.head_commit.author.name }}
+          COMMIT_DATE: ${{ github.event.head_commit.timestamp }}
+          COMMIT_URL: https://github.com/${{ github.repository }}/commit/${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${NOTION_TOKEN:-}" ]; then
+            echo "NOTION_TOKEN não está configurado."
+            exit 1
+          fi
+
+          echo "Procurando o projeto no Notion..."
+
+          QUERY_RESPONSE=$(curl -sS -X POST \
+            "https://api.notion.com/v1/data_sources/${NOTION_DATA_SOURCE_ID}/query" \
+            -H "Authorization: Bearer ${NOTION_TOKEN}" \
+            -H "Notion-Version: ${NOTION_VERSION}" \
+            -H "Content-Type: application/json" \
+            --data "$(jq -n --arg repo "$REPOSITORIO_URL" '{filter:{property:"Repositorio",url:{equals:$repo}},page_size:1}')")
+
+          echo "$QUERY_RESPONSE" | jq '{object, results: (.results | length), message}'
+
+          PAGE_ID=$(echo "$QUERY_RESPONSE" | jq -r '.results[0].id // empty')
+
+          if [ -z "$PAGE_ID" ]; then
+            echo "Projeto não encontrado. Criando projeto no Notion..."
+
+            CREATE_RESPONSE=$(curl -sS -X POST \
+              "https://api.notion.com/v1/pages" \
+              -H "Authorization: Bearer ${NOTION_TOKEN}" \
+              -H "Notion-Version: ${NOTION_VERSION}" \
+              -H "Content-Type: application/json" \
+              --data "$(jq -n \
+                --arg repo "$REPOSITORIO_URL" \
+                --arg sha "$COMMIT_SHA" \
+                --arg message "$COMMIT_MESSAGE" \
+                --arg author "$COMMIT_AUTHOR" \
+                --arg date "$COMMIT_DATE" \
+                --arg url "$COMMIT_URL" \
+                '{parent:{data_source_id:"d4190e15-cd71-4d55-8706-1ccfeb0227fd"},properties:{Projeto:{title:[{text:{content:"Biblioteca-LED"}}]},Repositorio:{url:$repo},Status:{select:{name:"Ativo"}},"Ultimo commit":{rich_text:[{text:{content:$sha}}]},"Ultima atualizacao":{date:{start:$date}}},children:[{object:"block",type:"heading_2",heading_2:{rich_text:[{type:"text",text:{content:"Documentação automática"}}]}},{object:"block",type:"paragraph",paragraph:{rich_text:[{type:"text",text:{content:"Este projeto é atualizado automaticamente a partir dos commits do GitHub."}}]}},{object:"block",type:"heading_3",heading_3:{rich_text:[{type:"text",text:{content:"Último commit"}}]}},{object:"block",type:"paragraph",paragraph:{rich_text:[{type:"text",text:{content:$message}}]}},{object:"block",type:"paragraph",paragraph:{rich_text:[{type:"text",text:{content:("Autor: " + $author)}}]}},{object:"block",type:"paragraph",paragraph:{rich_text:[{type:"text",text:{content:("Commit: " + $sha)}}]}},{object:"block",type:"paragraph",paragraph:{rich_text:[{type:"text",text:{content:$url,link:{url:$url}}}]}}]}')")
+
+            echo "$CREATE_RESPONSE" | jq '{object,id,url,message,code}'
+            echo "Projeto criado/atualizado no Notion."
+            exit 0
+          fi
+
+          echo "Projeto encontrado: $PAGE_ID"
+          echo "Atualizando propriedades..."
+
+          UPDATE_RESPONSE=$(curl -sS -X PATCH \
+            "https://api.notion.com/v1/pages/${PAGE_ID}" \
+            -H "Authorization: Bearer ${NOTION_TOKEN}" \
+            -H "Notion-Version: ${NOTION_VERSION}" \
+            -H "Content-Type: application/json" \
+            --data "$(jq -n \
+              --arg sha "$COMMIT_SHA" \
+              --arg date "$COMMIT_DATE" \
+              '{properties:{"Ultimo commit":{rich_text:[{text:{content:$sha}}]},"Ultima atualizacao":{date:{start:$date}}}}')")
+
+          echo "$UPDATE_RESPONSE" | jq '{object,id,last_edited_time,message,code}'
+
+          echo "Adicionando o commit ao histórico de documentação..."
+
+          BLOCK_RESPONSE=$(curl -sS -X PATCH \
+            "https://api.notion.com/v1/blocks/${PAGE_ID}/children" \
+            -H "Authorization: Bearer ${NOTION_TOKEN}" \
+            -H "Notion-Version: ${NOTION_VERSION}" \
+            -H "Content-Type: application/json" \
+            --data "$(jq -n \
+              --arg message "$COMMIT_MESSAGE" \
+              --arg author "$COMMIT_AUTHOR" \
+              --arg sha "$COMMIT_SHA" \
+              --arg date "$COMMIT_DATE" \
+              --arg url "$COMMIT_URL" \
+              '{children:[{object:"block",type:"divider",divider:{}},{object:"block",type:"heading_3",heading_3:{rich_text:[{type:"text",text:{content:("Commit " + $sha[0:7])}}]}},{object:"block",type:"paragraph",paragraph:{rich_text:[{type:"text",text:{content:$message}}]}},{object:"block",type:"paragraph",paragraph:{rich_text:[{type:"text",text:{content:("Autor: " + $author + " | Data: " + $date)}}]}},{object:"block",type:"paragraph",paragraph:{rich_text:[{type:"text",text:{content:$url,link:{url:$url}}}]}}]}')")
+
+          echo "$BLOCK_RESPONSE" | jq '{object,results:(.results|length),message,code}'
+          echo "Documentação atualizada com sucesso!"
